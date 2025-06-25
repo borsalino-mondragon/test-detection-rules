@@ -4,11 +4,16 @@ name: Pull Latest Content
 
 on:
   schedule:
-  # Run daily at 23:05 UTC time
-  - cron: "5 23 * * *"
+    # Run daily at 23:05 UTC time
+    - cron: "5 23 * * *"
 
   # workflow_dispatch allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      environments:
+        description: 'Comma-separated list of environments to run against (e.g., prod,dev,qa)'
+        required: false
+        default: '' # Leave empty to run against all defined environments by default
 
 permissions:
   contents: write
@@ -18,13 +23,31 @@ permissions:
 jobs:
   pull-latest-content:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Define your environments here. Each item in this list will be an environment.
+        # You'll need to define environment-specific variables and secrets.
+        environment:
+          - prod
+          - dev
+          - qa
+      fail-fast: false # Set to true if you want the whole matrix to fail if one job fails
 
     env:
-      LOGGING_LEVEL: ${{ vars.LOGGING_LEVEL }}
-      GOOGLE_SECOPS_API_BASE_URL: ${{ vars.GOOGLE_SECOPS_API_BASE_URL }}
-      GOOGLE_SECOPS_API_UPLOAD_BASE_URL: ${{ vars.GOOGLE_SECOPS_API_UPLOAD_BASE_URL }}
-      GOOGLE_SECOPS_INSTANCE: ${{ vars.GOOGLE_SECOPS_INSTANCE }}
-      AUTHORIZATION_SCOPES: ${{ vars.AUTHORIZATION_SCOPES }}
+      # These environment variables will be set for each job in the matrix
+      # You'll need to define these as GitHub Actions variables/secrets at the repository or environment level.
+      # For example, create variables like GOOGLE_SECOPS_API_BASE_URL_PROD, GOOGLE_SECOPS_API_BASE_URL_DEV, etc.
+      # Or, preferably, use GitHub Environments for better secret management.
+
+      LOGGING_LEVEL: ${{ vars.LOGGING_LEVEL_${{ matrix.environment | upper }} }}
+      GOOGLE_SECOPS_API_BASE_URL: ${{ vars.GOOGLE_SECOPS_API_BASE_URL_${{ matrix.environment | upper }} }}
+      GOOGLE_SECOPS_API_UPLOAD_BASE_URL: ${{ vars.GOOGLE_SECOPS_API_UPLOAD_BASE_URL_${{ matrix.environment | upper }} }}
+      GOOGLE_SECOPS_INSTANCE: ${{ vars.GOOGLE_SECOPS_INSTANCE_${{ matrix.environment | upper }} }}
+      AUTHORIZATION_SCOPES: ${{ vars.AUTHORIZATION_SCOPES_${{ matrix.environment | upper }} }}
+      GOOGLE_CLOUD_PROJECT_ID: ${{ vars.GOOGLE_CLOUD_PROJECT_ID_${{ matrix.environment | upper }} }}
+      # Secrets should be handled through GitHub Environments
+      GOOGLE_CLOUD_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GOOGLE_CLOUD_WORKLOAD_IDENTITY_PROVIDER_${{ matrix.environment | upper }} }}
+
 
     steps:
       - uses: actions/checkout@v4
@@ -36,8 +59,8 @@ jobs:
 
       - uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.GOOGLE_CLOUD_PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GOOGLE_CLOUD_WORKLOAD_IDENTITY_PROVIDER}}
+          project_id: ${{ env.GOOGLE_CLOUD_PROJECT_ID }} # Use environment variable
+          workload_identity_provider: ${{ env.GOOGLE_CLOUD_WORKLOAD_IDENTITY_PROVIDER }} # Use environment variable
           access_token_lifetime: 180s
           export_environment_variables: true
           create_credentials_file: true
@@ -46,7 +69,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: "pip"  # Caching pip dependencies
+          cache: "pip" # Caching pip dependencies
 
       - name: Install Python project dependencies
         run: pip install -r requirements_dev.txt
@@ -57,30 +80,34 @@ jobs:
       - name: Run tests using pytest
         run: pytest -v
 
-      - name: Pull latest version of all rules from Google SecOps
+      - name: Pull latest version of all rules from Google SecOps (${{ matrix.environment }})
         run: python -m content_manager rules get
 
-      - name: Pull latest version of all data tables from Google SecOps
+      - name: Pull latest version of all data tables from Google SecOps (${{ matrix.environment }})
         run: python -m content_manager data-tables get
 
-      - name: Pull latest version of all reference lists from Google SecOps
+      - name: Pull latest version of all reference lists from Google SecOps (${{ matrix.environment }})
         run: python -m content_manager reference-lists get
 
       - name: Add files to git staging area
+        # It's important to commit to a branch specific to the environment to avoid conflicts
         run: git add rules rule_config.yaml data_tables data_table_config.yaml reference_lists reference_list_config.yaml
 
       - name: Run git status command
-        run: git status  # For debugging
+        run: git status # For debugging
 
-      - name: Commit pending changes
+      - name: Commit pending changes for ${{ matrix.environment }}
         run: |
           # Check if there are uncommitted changes
           if [[ -n $(git status --porcelain) ]]; then
-            git commit -m "latest content pulled from google secops api"
-            git push origin main
+            # Commit to an environment-specific branch
+            git checkout -b "content-update-${{ matrix.environment }}" || git checkout "content-update-${{ matrix.environment }}"
+            git add .
+            git commit -m "latest content pulled from google secops api for ${{ matrix.environment }}"
+            git push origin "content-update-${{ matrix.environment }}"
           else
-            echo "No changes to commit"
+            echo "No changes to commit for ${{ matrix.environment }}"
           fi
 
-      - name: Show last git commit message
-        run: git log -1  # For debugging
+      - name: Show last git commit message for ${{ matrix.environment }}
+        run: git log -1 # For debugging
